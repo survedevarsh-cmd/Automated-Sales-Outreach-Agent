@@ -195,7 +195,7 @@ export default function AgentDashboard() {
               <input 
                 type="text" 
                 className={styles.inputField} 
-                placeholder="John Doe"
+                placeholder="Michael Jackson"
                 value={prospectName}
                 onChange={e => setProspectName(e.target.value)}
               />
