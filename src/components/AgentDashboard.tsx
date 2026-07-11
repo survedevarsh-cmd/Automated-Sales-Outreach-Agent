@@ -197,7 +197,7 @@ export default function AgentDashboard() {
   return (
     <div className={styles.dashboardContainer}>
       {/* Input Section */}
-      {!isProcessing && !results && (
+      {!isProcessing && !results && !errorMessage && !notFoundMessage && (
         <div className={`${styles.inputSection} glass-panel animate-fade-in`}>
           <h2 style={{ marginBottom: '1.5rem', textAlign: 'center' }}>Configure Outreach</h2>
           <form onSubmit={startAgent}>
@@ -266,7 +266,7 @@ export default function AgentDashboard() {
       )}
 
       {/* Workflow & Results Dashboard */}
-      {(isProcessing || results) && (
+      {(isProcessing || results || errorMessage || notFoundMessage) && (
         <div className={`${styles.workflowGrid} animate-fade-in`}>
           {/* Left Panel: Step-by-Step Progress */}
           <div className={`${styles.stepsPanel} glass-panel`}>
