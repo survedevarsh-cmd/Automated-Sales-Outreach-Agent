@@ -13,10 +13,13 @@ interface WorkflowStep {
 }
 
 export default function AgentDashboard() {
-  const [url, setUrl] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [websiteUrl, setWebsiteUrl] = useState('');
+  const [searchMode, setSearchMode] = useState<'ai_search' | 'direct_url'>('ai_search');
   const [prospectName, setProspectName] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [notFoundMessage, setNotFoundMessage] = useState<string | null>(null);
 
   // Feedback States
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
@@ -37,7 +40,7 @@ export default function AgentDashboard() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          company_url: url,
+          company_url: companyName,
           generated_email: results.body,
           ai_research: results.research,
           rating: rating === 'useful' ? 'Useful' : 'Needs improvement',
@@ -56,7 +59,7 @@ export default function AgentDashboard() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          company_url: url,
+          company_url: companyName,
           generated_email: results.body,
           ai_research: results.research,
           rating: inlineRating === 'useful' ? 'Useful' : (inlineRating === 'needs_improvement' ? 'Needs improvement' : null),
@@ -82,6 +85,7 @@ export default function AgentDashboard() {
   };
   
   const [steps, setSteps] = useState<WorkflowStep[]>([
+    { id: 'search', title: 'Searching Company Profile', status: 'pending' },
     { id: 'analyze', title: 'Analyzing Business', status: 'pending' },
     { id: 'pain_points', title: 'Identifying Pain Points', status: 'pending' },
     { id: 'research', title: 'Researching Prospect', status: 'pending' },
@@ -93,18 +97,27 @@ export default function AgentDashboard() {
     subject: string;
     body: string;
     explanation: string;
+    emailBreakdown?: { type: string, content: string }[];
     followUps: string[];
     painPoints: string;
     research: string;
+    companyProfile?: {
+      website: string | null;
+      linkedin: string | null;
+      blog: string | null;
+      documentation: string | null;
+      news: string | null;
+    };
   } | null>(null);
 
   const startAgent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url) return;
+    if (!companyName) return;
     
     setIsProcessing(true);
     setResults(null);
     setErrorMessage(null);
+    setNotFoundMessage(null);
 
     // Reset steps
     const initialSteps = steps.map(s => ({ ...s, status: 'pending' as StepStatus }));
@@ -121,7 +134,7 @@ export default function AgentDashboard() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ url, prospectName }),
+        body: JSON.stringify({ companyName, websiteUrl, prospectName }),
       });
 
       if (!response.body) throw new Error("No response body");
@@ -154,6 +167,9 @@ export default function AgentDashboard() {
                 updateStep(data.step, data.status);
               } else if (currentEvent === 'result') {
                 setResults(data);
+              } else if (currentEvent === 'not_found') {
+                setNotFoundMessage(data.message);
+                setSteps(prev => prev.map(s => s.status === 'active' ? { ...s, status: 'error' } : s));
               } else if (currentEvent === 'error') {
                 console.error("Agent error:", data.message);
                 setErrorMessage(data.message);
@@ -180,16 +196,52 @@ export default function AgentDashboard() {
           <h2 style={{ marginBottom: '1.5rem', textAlign: 'center' }}>Configure Outreach</h2>
           <form onSubmit={startAgent}>
             <div className={styles.formGroup}>
-              <label>Target Company URL</label>
+              <label>Outreach Mode</label>
+              <div className={styles.optionsGrid}>
+                <button 
+                  type="button"
+                  className={`${styles.optionBtn} ${searchMode === 'ai_search' ? styles.selected : ''}`}
+                  onClick={() => { setSearchMode('ai_search'); setWebsiteUrl(''); }}
+                >🤖 Deep AI Search</button>
+                <button 
+                  type="button"
+                  className={`${styles.optionBtn} ${searchMode === 'direct_url' ? styles.selected : ''}`}
+                  onClick={() => setSearchMode('direct_url')}
+                >🔗 Direct URL (Faster)</button>
+              </div>
+              {searchMode === 'ai_search' && (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                  AI will search for the official website, LinkedIn, blogs, and news. Costs 1 extra request.
+                </p>
+              )}
+            </div>
+
+            <div className={styles.formGroup}>
+              <label>Target Company Name</label>
               <input 
-                type="url" 
+                type="text" 
                 className={styles.inputField} 
-                placeholder="https://example.com"
-                value={url}
-                onChange={e => setUrl(e.target.value)}
+                placeholder="e.g. PostHog, Vercel, Stripe"
+                value={companyName}
+                onChange={e => setCompanyName(e.target.value)}
                 required
               />
             </div>
+
+            {searchMode === 'direct_url' && (
+              <div className={styles.formGroup}>
+                <label>Company Website URL (Required for Direct URL mode)</label>
+                <input 
+                  type="url" 
+                  className={styles.inputField} 
+                  placeholder="e.g. https://posthog.com"
+                  value={websiteUrl}
+                  onChange={e => setWebsiteUrl(e.target.value)}
+                  required={searchMode === 'direct_url'}
+                />
+              </div>
+            )}
+
             <div className={styles.formGroup}>
               <label>Prospect Name (Optional)</label>
               <input 
@@ -237,7 +289,20 @@ export default function AgentDashboard() {
 
           {/* Right Panel: Output Results */}
           <div className={`${styles.resultsPanel} glass-panel`}>
-            {errorMessage ? (
+            {notFoundMessage ? (
+              <div className="flex-center" style={{ height: '100%', flexDirection: 'column', gap: '1rem' }}>
+                <div style={{ fontSize: '3.5rem' }}>🏢❓</div>
+                <h3>Company Not Found</h3>
+                <p style={{ color: 'var(--text-muted)', textAlign: 'center', maxWidth: '80%', lineHeight: '1.6' }}>{notFoundMessage}</p>
+                <button 
+                  onClick={() => { setNotFoundMessage(null); setIsProcessing(false); setCompanyName(''); }}
+                  className={styles.btnPrimary} 
+                  style={{ marginTop: '1.5rem' }}
+                >
+                  Try Another Search
+                </button>
+              </div>
+            ) : errorMessage ? (
               <div className="flex-center" style={{ height: '100%', flexDirection: 'column', gap: '1rem' }}>
                 <div style={{ color: 'var(--error-color, #ff4d4d)', fontSize: '3rem' }}>⚠️</div>
                 <h3 style={{ color: 'var(--error-color, #ff4d4d)' }}>Processing Failed</h3>
@@ -258,6 +323,17 @@ export default function AgentDashboard() {
               </div>
             ) : (
               <div className={styles.resultContent}>
+                <div className={styles.resultSection}>
+                  <h3>🏢 Company Profile</h3>
+                  <div className={styles.evidenceCard} style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                    {results.companyProfile?.website && <div>🌐 <a href={results.companyProfile.website} target="_blank" rel="noreferrer" style={{ color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 500 }}>Official Website</a></div>}
+                    {results.companyProfile?.linkedin && <div>💼 <a href={results.companyProfile.linkedin} target="_blank" rel="noreferrer" style={{ color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 500 }}>LinkedIn Page</a></div>}
+                    {results.companyProfile?.blog && <div>📝 <a href={results.companyProfile.blog} target="_blank" rel="noreferrer" style={{ color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 500 }}>Blog</a></div>}
+                    {results.companyProfile?.documentation && <div>📚 <a href={results.companyProfile.documentation} target="_blank" rel="noreferrer" style={{ color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 500 }}>Documentation</a></div>}
+                    {results.companyProfile?.news && <div>📰 <a href={results.companyProfile.news} target="_blank" rel="noreferrer" style={{ color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 500 }}>News</a></div>}
+                  </div>
+                </div>
+
                 <div className={styles.resultSection}>
                   <h3>🔎 Evidence Panel</h3>
                   <div className={styles.evidenceCard}>
@@ -314,6 +390,27 @@ export default function AgentDashboard() {
                   </div>
                 </div>
 
+                {results.emailBreakdown && results.emailBreakdown.length > 0 && (
+                  <div className={styles.resultSection}>
+                    <h3>🔍 Email Reasoning Breakdown</h3>
+                    <div className={styles.evidenceCard} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'rgba(255,255,255,0.02)' }}>
+                      {results.emailBreakdown.map((block, idx) => (
+                        <React.Fragment key={idx}>
+                          <div style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.05)', borderRadius: '6px', borderLeft: '3px solid var(--primary-color)' }}>
+                            <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--primary-color)', textTransform: 'uppercase', marginBottom: '0.25rem' }}>{block.type}</div>
+                            <div style={{ fontSize: '0.95rem', color: 'var(--text-color)' }}>{block.content}</div>
+                          </div>
+                          {idx < results.emailBreakdown!.length - 1 && (
+                            <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '1.2rem', padding: '0.2rem 0' }}>
+                              ↓
+                            </div>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
                 <div className={styles.resultSection}>
                   <h3>🔄 Automated Follow-ups</h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -327,7 +424,7 @@ export default function AgentDashboard() {
                 </div>
 
                 <button 
-                  onClick={() => { setResults(null); setIsProcessing(false); setUrl(''); }}
+                  onClick={() => { setResults(null); setIsProcessing(false); setCompanyName(''); }}
                   className={styles.btnPrimary} 
                   style={{ width: '100%', marginTop: '1rem' }}
                 >
@@ -378,7 +475,7 @@ export default function AgentDashboard() {
                 <div className={styles.feedbackGroup}>
                   <label>What feature would you most like next?</label>
                   <div className={styles.optionsGrid}>
-                    {['Company Search', 'LinkedIn Integration', 'Bulk Emails', 'CRM Export', 'Better Research', 'Other'].map(feature => (
+                    {['Chrome Extension', 'LinkedIn Integration', 'Bulk Emails', 'CRM Export', 'A/B Testing', 'Other'].map(feature => (
                       <button 
                         key={feature}
                         className={`${styles.optionBtn} ${featureRequest === feature ? styles.selected : ''}`}

@@ -1,15 +1,27 @@
-async function test() {
+const cheerio = require('cheerio');
+
+async function getLinkedIn(prospect, company) {
   try {
-    const res = await fetch('http://localhost:3000/api/outreach', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: 'https://tesla.com' })
+    const query = encodeURIComponent(`site:linkedin.com/in/ "${prospect}" "${company}"`);
+    const res = await fetch(`https://html.duckduckgo.com/html/?q=${query}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+      }
     });
-    console.log('Status:', res.status);
-    const text = await res.text();
-    console.log(text);
-  } catch (err) {
-    console.error(err);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    
+    const results = [];
+    $('.result__body').each((i, el) => {
+      if (i >= 2) return;
+      const title = $(el).find('.result__title').text().trim();
+      const snippet = $(el).find('.result__snippet').text().trim();
+      if (title && snippet) results.push({ title, snippet });
+    });
+    
+    console.log("LINKEDIN SEARCH:", results);
+  } catch(e) {
+    console.error(e);
   }
 }
-test();
+getLinkedIn('Guillermo Rauch', 'Vercel');
