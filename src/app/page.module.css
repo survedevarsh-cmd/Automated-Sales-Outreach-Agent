@@ -171,18 +171,18 @@
 }
 
 .emailClientCard {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
   padding: 2rem;
   border-radius: 8px;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-  color: #1a202c;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  color: var(--text-primary);
   font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.6;
 }
 
 .emailHeader {
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-color);
   padding-bottom: 1rem;
   margin-bottom: 1.5rem;
 }
@@ -195,13 +195,13 @@
 
 .emailHeaderLabel {
   width: 70px;
-  color: #718096;
+  color: #888888;
   font-weight: 500;
 }
 
 .emailHeaderValue {
   font-weight: 500;
-  color: #2d3748;
+  color: #ededed;
 }
 
 .emailBody {
@@ -227,30 +227,31 @@
   display: flex;
   justify-content: center;
   gap: 1rem;
-  border-top: 1px solid rgba(0,0,0,0.1);
+  border-top: 1px solid var(--border-color);
   padding-top: 1rem;
 }
 
 .feedbackBtn {
-  background: rgba(0, 0, 0, 0.05);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-color);
   padding: 0.5rem 1rem;
   border-radius: 20px;
   cursor: pointer;
   font-size: 0.95rem;
   transition: all 0.2s ease;
-  color: #4a5568;
+  color: var(--text-secondary);
 }
 
 .feedbackBtn:hover {
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.05);
   transform: translateY(-1px);
 }
 
 .feedbackBtn.selected {
-  background: var(--accent-primary);
+  background: var(--accent-gradient);
   color: white;
-  border-color: var(--accent-primary);
+  border-color: transparent;
+  box-shadow: 0 4px 12px var(--accent-glow);
 }
 
 .modalOverlay {
@@ -327,9 +328,10 @@
 }
 
 .optionBtn.selected {
-  background: var(--accent-primary);
-  border-color: var(--accent-glow);
+  background: var(--accent-gradient);
+  border-color: transparent;
   color: white;
+  box-shadow: 0 4px 12px var(--accent-glow);
 }
 
 .textareaField {

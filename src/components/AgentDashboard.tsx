@@ -137,6 +137,11 @@ export default function AgentDashboard() {
         body: JSON.stringify({ companyName, websiteUrl, prospectName }),
       });
 
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server Error (${response.status}): ${errorText}`);
+      }
+
       if (!response.body) throw new Error("No response body");
 
       const reader = response.body.getReader();
@@ -183,6 +188,7 @@ export default function AgentDashboard() {
       }
     } catch (error) {
       console.error(error);
+      setErrorMessage(error instanceof Error ? error.message : "An unexpected network error occurred.");
     } finally {
       setIsProcessing(false);
     }
