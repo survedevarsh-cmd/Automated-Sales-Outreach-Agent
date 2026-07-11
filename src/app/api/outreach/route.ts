@@ -3,7 +3,8 @@ import { GoogleGenAI } from "@google/genai";
 import * as cheerio from "cheerio";
 import { z } from "zod";
 
-export const runtime = 'edge';
+// Edge runtime sometimes crashes with cheerio on Vercel, switching to Node.js Serverless
+export const maxDuration = 60; // Allow 60 seconds for Gemini API and scraping
 
 import { supabase } from "../../../lib/supabase";
 
