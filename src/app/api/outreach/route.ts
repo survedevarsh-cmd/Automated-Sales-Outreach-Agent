@@ -2,11 +2,10 @@ import { NextRequest } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import * as cheerio from "cheerio";
 import { z } from "zod";
+import { createClient } from "@/utils/supabase/server";
 
 // Edge runtime sometimes crashes with cheerio on Vercel, switching to Node.js Serverless
 export const maxDuration = 60; // Allow 60 seconds for Gemini API and scraping
-
-import { supabase } from "../../../lib/supabase";
 
 const inputSchema = z.object({
   companyName: z.string().min(1, "Please provide a valid company name"),
@@ -16,6 +15,8 @@ const inputSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const supabase = await createClient();
+
     const body = await req.json();
     const parseResult = inputSchema.safeParse(body);
     
@@ -26,7 +27,9 @@ export async function POST(req: NextRequest) {
 
     const { companyName, websiteUrl, prospectName } = parseResult.data;
     
-    const apiKey = process.env.GEMINI_API_KEY || '';
+    // BYOK: Look for custom key in headers first, then fall back to env
+    const customKey = req.headers.get('x-gemini-api-key');
+    const apiKey = customKey || process.env.GEMINI_API_KEY || '';
     if (!apiKey) {
       return new Response(JSON.stringify({ error: "Server configuration error: Missing Gemini API Key" }), { status: 500 });
     }
@@ -49,7 +52,7 @@ export async function POST(req: NextRequest) {
                     .select('payload')
                     .eq('cache_key', cacheKey)
                     .single();
-                 if (data && data.payload) {
+                 if (data && data.payload && data.payload.emails && data.payload.emails.length > 1) {
                      cachedResult = data.payload;
                  }
              } catch (e) {
@@ -72,40 +75,50 @@ export async function POST(req: NextRequest) {
           }
 
           const ai = new GoogleGenAI({ apiKey });
+          // Models to try in order
+          const MODELS = ['gemini-flash-latest'];
+          let modelIndex = 0;
 
           // Helper to handle rate limits and server overloads automatically
           const generateWithRetry = async (config: any) => {
             let attempt = 0;
             while (true) {
+              const model = MODELS[Math.min(modelIndex, MODELS.length - 1)];
               try {
-                return await ai.models.generateContent(config);
+                return await ai.models.generateContent({ ...config, model });
               } catch (err: any) {
                 const errMsg = err.message || '';
                 
-                // Handle 429 Rate Limits
-                if (err.status === 429 || errMsg.includes('429') || errMsg.includes('Quota exceeded')) {
-                   if (attempt >= 3) throw err;
+                // Handle 429 Rate Limits — wait and retry, or switch model
+                if (err.status === 429 || errMsg.includes('429') || errMsg.includes('Quota exceeded') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+                   if (attempt >= 4) throw new Error(`API rate limit exceeded after retries. Please wait 1 minute and try again.`);
                    
-                   let waitSeconds = 25;
+                   let waitSeconds = 30;
                    const match = errMsg.match(/retry in ([\d\.]+)s/i);
                    if (match && match[1]) {
-                       waitSeconds = Math.ceil(parseFloat(match[1])) + 2;
+                       waitSeconds = Math.ceil(parseFloat(match[1])) + 3;
                    }
                    
-                   if (waitSeconds > 15) {
-                       throw new Error(`Google AI API rate limit exceeded. Please wait ${waitSeconds} seconds before trying again.`);
+                   // If wait is too long, try the next fallback model first
+                   if (waitSeconds > 30 && modelIndex < MODELS.length - 1) {
+                       modelIndex++;
+                   } else {
+                       await new Promise(r => setTimeout(r, Math.min(waitSeconds, 30) * 1000));
                    }
-                   
-                   await new Promise(r => setTimeout(r, waitSeconds * 1000));
                    attempt++;
                 } 
-                // Handle 503 Server Overload
-                else if (err.status === 503 || errMsg.includes('503') || errMsg.includes('high demand') || errMsg.includes('UNAVAILABLE')) {
-                   if (attempt >= 3) {
-                       throw new Error("Google's AI servers are currently overloaded with high demand. Please try again in a few minutes.");
+                // Handle 503 Server Overload — exponential backoff
+                else if (err.status === 503 || errMsg.includes('503') || errMsg.includes('high demand') || errMsg.includes('UNAVAILABLE') || errMsg.includes('overloaded')) {
+                   if (attempt >= 6) {
+                       throw new Error("Google's AI servers are overloaded right now. Please try again in a few minutes.");
                    }
-                   // Wait 3 seconds and try again
-                   await new Promise(r => setTimeout(r, 3000));
+                   // Exponential backoff: 3s, 6s, 12s, 20s, 30s, 40s
+                   const backoff = Math.min(3 * Math.pow(2, attempt), 40);
+                   // Also try fallback model after 2 503 failures
+                   if (attempt >= 2 && modelIndex < MODELS.length - 1) {
+                       modelIndex++;
+                   }
+                   await new Promise(r => setTimeout(r, backoff * 1000));
                    attempt++;
                 } 
                 else {
@@ -126,40 +139,64 @@ export async function POST(req: NextRequest) {
           };
 
           if (websiteUrl && websiteUrl.trim().length > 0) {
-             // Skip LLM search if user provided URL directly to save API requests!
+             // User provided URL directly — no API call needed
              companyProfile.website = websiteUrl;
           } else {
-             const searchPrompt = `You are an elite corporate research assistant. Find the official online presence for the company named "${companyName}".
-CRITICAL RULES:
-1. Do NOT guess, hallucinate, or assume URLs (especially LinkedIn profiles). 
-2. If you are not 100% absolutely certain about the EXACT official URL, you MUST return null for that field.
-3. It is better to return null than to return a fake or incorrect link.
+             // 🧠 SMART URL GUESSER: Try common TLD patterns for free before touching the API.
+             // e.g. "PostHog" → posthog.com, "Linear" → linear.app, etc.
+             const slug = companyName.toLowerCase()
+               .replace(/\s+/g, '')       // remove spaces: "Post Hog" → "posthog"
+               .replace(/[^a-z0-9]/g, ''); // remove special chars
+             
+             const candidates = [
+               `https://${slug}.com`,
+               `https://${slug}.io`,
+               `https://${slug}.ai`,
+               `https://${slug}.co`,
+               `https://${slug}.app`,
+               `https://${slug}.dev`,
+             ];
 
-Return ONLY raw JSON, with no markdown formatting, no backticks, and no explanations. Format strictly as JSON with exactly these keys: 
-"website" (string | null), 
-"linkedin" (string | null), 
-"blog" (string | null), 
-"documentation" (string | null), 
-"news" (string | null)`;
+             // Test each candidate URL with a fast HEAD request
+             const testUrl = async (url: string): Promise<boolean> => {
+               try {
+                 const res = await fetch(url, { 
+                   method: 'HEAD', 
+                   signal: AbortSignal.timeout(3000),
+                   headers: { 'User-Agent': 'SalesOutreachAgent/1.0' }
+                 });
+                 return res.ok || res.status === 405; // 405 means HEAD not allowed but site exists
+               } catch { return false; }
+             };
+
+             // Try candidates in parallel for speed
+             const results = await Promise.all(candidates.map(url => testUrl(url).then(ok => ({ url, ok }))));
+             const found = results.find(r => r.ok);
              
-             const searchResp = await generateWithRetry({
-                 model: 'gemini-flash-latest',
-                 contents: searchPrompt
-             });
-             
-             const searchRaw = searchResp.text;
-             if (!searchRaw) throw new Error("Failed to search company.");
-             
-             try {
-                const cleanedRaw = searchRaw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-                companyProfile = JSON.parse(cleanedRaw);
-             } catch {
-                throw new Error("Failed to parse company profile.");
+             if (found) {
+               companyProfile.website = found.url;
+               // Also try to guess LinkedIn from company name
+               companyProfile.linkedin = `https://linkedin.com/company/${slug}`;
+             } else {
+               // ⚠️ LAST RESORT: Only now do we use a Gemini API call
+               const searchPrompt = `Find the official website URL for a company named "${companyName}". Return ONLY a raw JSON object with no markdown. Keys: "website" (string|null), "linkedin" (string|null). Only include URLs you are 100% certain about.`;
+               
+               const searchResp = await generateWithRetry({ contents: searchPrompt });
+               const searchRaw = searchResp.text;
+               if (!searchRaw) throw new Error("Failed to search company.");
+               
+               try {
+                  const cleanedRaw = searchRaw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+                  const parsed = JSON.parse(cleanedRaw);
+                  companyProfile = { ...companyProfile, ...parsed };
+               } catch {
+                  throw new Error("Failed to parse company profile.");
+               }
              }
           }
           
           if (!companyProfile.website) {
-             sendEvent("not_found", { message: `We couldn't find an official website or online presence for "${companyName}". Please verify the name or try a more specific search term.` });
+             sendEvent("not_found", { message: `We couldn't find an official website for "${companyName}". Please try using the "Direct URL" mode and paste the company's website manually.` });
              controller.close();
              return;
           }
@@ -203,10 +240,11 @@ Return ONLY raw JSON, with no markdown formatting, no backticks, and no explanat
              } catch { return ""; }
           };
 
-          const [scrapeResult, liveNews, linkedinProfile] = await Promise.all([
+          const [scrapeResult, liveNews, linkedinProfile, careersData] = await Promise.all([
              scrapeJina(),
              scrapeDDG(`"${companyName}" recent news (launch OR funding OR announced)`, 3),
-             prospectName ? scrapeDDG(`site:linkedin.com/in/ "${prospectName}" "${companyName}"`, 2) : Promise.resolve("")
+             prospectName ? scrapeDDG(`site:linkedin.com/in/ "${prospectName}" "${companyName}"`, 2) : Promise.resolve(""),
+             scrapeDDG(`"${companyName}" (careers OR jobs OR "we are hiring")`, 3)
           ]);
           
           if (!scrapeResult || scrapeResult.length < 50) {
@@ -228,10 +266,13 @@ Prospect LinkedIn Context (if any): ${linkedinProfile || 'None'}
 Real-Time News Context:
 ${liveNews || 'No recent news found.'}
 
+Careers & Hiring Context:
+${careersData || 'No explicit hiring data found.'}
+
 Website Content:
 ${scrapeResult}
 
-Your task is to synthesize this information and output a highly personalized cold email along with the strategic context.
+Your task is to synthesize this information and output highly personalized cold emails along with the strategic context.
 
 CRITICAL RULES FOR EMAIL:
 1. NO GENERIC FLUFF: Never use "Hope you're doing well", "I was impressed by", or similar meaningless openings.
@@ -239,11 +280,14 @@ CRITICAL RULES FOR EMAIL:
 3. PROBLEM-AGITATE-SOLVE: Mention one specific observation (from their news or website), explain why it matters to the prospect's likely role, and connect it to a likely business challenge they face.
 4. BE CONCISE: Under 100 words. Natural tone. Soft call to action. Ensure flawless grammar.
 
-Step A: Based on the News and Website, deduce their most likely recent initiatives. Summarize in 2-3 sentences.
+Step A: Based on the News, Hiring Context, and Website, deduce their most likely recent initiatives. Summarize in 2-3 sentences.
 Step B: Identify 3 specific, critical pain points they solve for customers OR operational pain points they likely experience internally.
-Step C: Choose the SINGLE most compelling outreach angle based on the prospect's role and the news. Explain why.
-Step D: Draft the cold email strictly following the CRITICAL RULES above.
-Step E: Break down the exact logic of the drafted email into a transparent blueprint. You must provide exactly 5 reasoning blocks that explain why each sentence exists: 
+Step C: Choose the SINGLE most compelling outreach angle based on the prospect's role and the context. Explain why.
+Step D: Draft 3 different cold email versions following the CRITICAL RULES above. Each must use a distinct tone:
+  1. Direct & Assertive (Punchy, straight to the point, confident).
+  2. Value-Driven & Casual (Friendly, focuses on ROI, conversational).
+  3. Consultative & Soft (Curious, asks questions, low pressure).
+Step E: Break down the exact logic of the Direct & Assertive email into a transparent blueprint. You must provide exactly 5 reasoning blocks that explain why each sentence exists: 
   - Observation (e.g. "PostHog recently launched AI-powered product analytics.")
   - Reason (e.g. "Shows the email is based on something recent.")
   - Pain point (e.g. "AI adoption usually increases demo volume.")
@@ -255,8 +299,7 @@ Return ONLY raw JSON, with no markdown formatting, no backticks, and no explanat
 "research": (string, summary from Step A),
 "painPoints": (string, output from Step B),
 "explanation": (string, output from Step C),
-"subject": (string, email subject from Step D),
-"body": (string, email body from Step D),
+"emails": (array of 3 objects from Step D, each strictly with keys "tone", "subject", "body"),
 "emailBreakdown": (array of 5 objects from Step E, each strictly with keys "type" and "content". "type" must be one of: Observation, Reason, Pain point, Bridge, CTA),
 "followUps": (array of strings, emails from Step F)`;
 
@@ -282,8 +325,13 @@ Return ONLY raw JSON, with no markdown formatting, no backticks, and no explanat
           sendEvent("step_update", { step: "draft", status: "completed" });
 
           const finalPayload = {
-            subject: finalOutput.subject || "Missing Subject",
-            body: finalOutput.body || "Missing Body",
+            emails: finalOutput.emails || [{
+               tone: "Direct & Assertive",
+               subject: finalOutput.subject || "Missing Subject",
+               body: finalOutput.body || "Missing Body"
+            }],
+            subject: finalOutput.emails?.[0]?.subject || finalOutput.subject || "Missing Subject", // fallback
+            body: finalOutput.emails?.[0]?.body || finalOutput.body || "Missing Body", // fallback
             explanation: finalOutput.explanation || "Missing Explanation",
             emailBreakdown: finalOutput.emailBreakdown || [],
             followUps: finalOutput.followUps || [],
@@ -292,14 +340,15 @@ Return ONLY raw JSON, with no markdown formatting, no backticks, and no explanat
             companyProfile: companyProfile
           };
 
-          // Save to persistent cache
+          // Save to persistent cache and history
           if (supabase) {
              try {
                  await supabase
                     .from('outreach_cache')
                     .upsert({ cache_key: cacheKey, payload: finalPayload });
+
              } catch (e) {
-                 console.error("Supabase cache write error:", e);
+                 console.error("Supabase cache/history write error:", e);
              }
           }
 

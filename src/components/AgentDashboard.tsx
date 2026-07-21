@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import styles from '../app/page.module.css';
+import HistoryTab from './HistoryTab';
 
 type StepStatus = 'pending' | 'active' | 'completed' | 'error';
 
@@ -13,6 +14,7 @@ interface WorkflowStep {
 }
 
 export default function AgentDashboard() {
+  const [activeTab, setActiveTab] = useState<'new' | 'history'>('new');
   const [companyName, setCompanyName] = useState('');
   const [websiteUrl, setWebsiteUrl] = useState('');
   const [searchMode, setSearchMode] = useState<'ai_search' | 'direct_url'>('ai_search');
@@ -29,6 +31,54 @@ export default function AgentDashboard() {
   const [anythingElse, setAnythingElse] = useState('');
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
+
+  // New UI Enhancements State
+  const [editedEmails, setEditedEmails] = useState<{ tone: string, subject: string, body: string }[]>([]);
+  const [activeToneIndex, setActiveToneIndex] = useState(0);
+  const [editedFollowUps, setEditedFollowUps] = useState<string[]>([]);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = async (text: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy text', err);
+    }
+  };
+
+  const exportToCSV = () => {
+    if (!results) return;
+    
+    const activeEmail = editedEmails[activeToneIndex] || { subject: results.subject, body: results.body, tone: 'Primary' };
+    
+    const rows = [
+      ['Type', 'Content'],
+      ['Target Company', companyName],
+      ['Company Website', results.companyProfile?.website || 'N/A'],
+      ['Prospect Name', prospectName || 'N/A'],
+      ['Identified Pain Points', `"${results.painPoints.replace(/"/g, '""')}"`],
+      ['Agent Research Context', `"${results.research.replace(/"/g, '""')}"`],
+      ['Email Tone', activeEmail.tone],
+      ['Email Subject', `"${activeEmail.subject.replace(/"/g, '""')}"`],
+      ['Email Body', `"${activeEmail.body.replace(/"/g, '""')}"`]
+    ];
+
+    editedFollowUps.forEach((fu, idx) => {
+      rows.push([`Follow-up ${idx + 1}`, `"${fu.replace(/"/g, '""')}"`]);
+    });
+
+    const csvContent = rows.map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${companyName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_outreach.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const handleInlineRating = async (rating: 'useful' | 'needs_improvement') => {
     setInlineRating(rating);
@@ -60,7 +110,7 @@ export default function AgentDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           company_url: companyName,
-          generated_email: results.body,
+          generated_email: editedEmails[activeToneIndex]?.body || results.body,
           ai_research: results.research,
           rating: inlineRating === 'useful' ? 'Useful' : (inlineRating === 'needs_improvement' ? 'Needs improvement' : null),
           personalized_enough: personalizedEnough === 'yes' ? 'Yes' : (personalizedEnough === 'no' ? 'No' : null),
@@ -94,6 +144,7 @@ export default function AgentDashboard() {
   ]);
 
   const [results, setResults] = useState<{
+    emails?: { tone: string, subject: string, body: string }[];
     subject: string;
     body: string;
     explanation: string;
@@ -109,6 +160,18 @@ export default function AgentDashboard() {
       news: string | null;
     };
   } | null>(null);
+
+  useEffect(() => {
+    if (results) {
+      if (results.emails && results.emails.length > 0) {
+        setEditedEmails(results.emails);
+      } else {
+        setEditedEmails([{ tone: "Primary", subject: results.subject, body: results.body }]);
+      }
+      setActiveToneIndex(0);
+      setEditedFollowUps(results.followUps || []);
+    }
+  }, [results]);
 
   const startAgent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -129,10 +192,12 @@ export default function AgentDashboard() {
     };
 
     try {
+      const customKey = localStorage.getItem('custom_gemini_key') || '';
       const response = await fetch('/api/outreach', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(customKey ? { 'x-gemini-api-key': customKey } : {})
         },
         body: JSON.stringify({ companyName, websiteUrl, prospectName }),
       });
@@ -172,6 +237,22 @@ export default function AgentDashboard() {
                 updateStep(data.step, data.status);
               } else if (currentEvent === 'result') {
                 setResults(data);
+                
+                // Save to local storage history
+                try {
+                  const existing = JSON.parse(localStorage.getItem('outreach_history') || '[]');
+                  const newRecord = {
+                    id: Date.now().toString(),
+                    company_name: companyName,
+                    prospect_name: prospectName || '',
+                    email_subject: data.emails?.[0]?.subject || data.subject,
+                    email_body: data.emails?.[0]?.body || data.body,
+                    created_at: new Date().toISOString()
+                  };
+                  localStorage.setItem('outreach_history', JSON.stringify([newRecord, ...existing]));
+                } catch (e) {
+                  console.error("Failed to save to local storage", e);
+                }
               } else if (currentEvent === 'not_found') {
                 setNotFoundMessage(data.message);
                 setSteps(prev => prev.map(s => s.status === 'active' ? { ...s, status: 'error' } : s));
@@ -196,7 +277,23 @@ export default function AgentDashboard() {
 
   return (
     <div className={styles.dashboardContainer}>
-      {/* Input Section */}
+      {/* Tabs Navigation */}
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', justifyContent: 'center' }}>
+        <button 
+          className={`${styles.optionBtn} ${activeTab === 'new' ? styles.selected : ''}`}
+          onClick={() => setActiveTab('new')}
+        >🚀 New Outreach</button>
+        <button 
+          className={`${styles.optionBtn} ${activeTab === 'history' ? styles.selected : ''}`}
+          onClick={() => setActiveTab('history')}
+        >🕰️ History</button>
+      </div>
+
+      {activeTab === 'history' && <HistoryTab />}
+
+      {activeTab === 'new' && (
+        <>
+          {/* Input Section */}
       {!isProcessing && !results && !errorMessage && !notFoundMessage && (
         <div className={`${styles.inputSection} glass-panel animate-fade-in`}>
           <h2 style={{ marginBottom: '1.5rem', textAlign: 'center' }}>Configure Outreach</h2>
@@ -364,20 +461,65 @@ export default function AgentDashboard() {
                 </div>
                 
                 <div className={styles.resultSection}>
-                  <h3>✉️ Primary Outreach Draft</h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                    <h3>✉️ Outreach Drafts</h3>
+                    <div className={styles.tabsContainer}>
+                      {editedEmails.map((email, idx) => (
+                        <button
+                          key={idx}
+                          className={`${styles.tabBtn} ${activeToneIndex === idx ? styles.activeTab : ''}`}
+                          onClick={() => setActiveToneIndex(idx)}
+                        >
+                          {email.tone.split(' ')[0]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className={styles.emailClientCard}>
                     <div className={styles.emailHeader}>
                       <div className={styles.emailHeaderRow}>
                         <div className={styles.emailHeaderLabel}>To:</div>
                         <div className={styles.emailHeaderValue}>{prospectName || 'Prospect'}</div>
                       </div>
-                      <div className={styles.emailHeaderRow}>
-                        <div className={styles.emailHeaderLabel}>Subject:</div>
-                        <div className={styles.emailHeaderValue}>{results.subject}</div>
+                      <div className={`${styles.emailHeaderRow} ${styles.actionRow}`}>
+                        <div style={{ display: 'flex', flex: 1, alignItems: 'center' }}>
+                          <div className={styles.emailHeaderLabel}>Subject:</div>
+                          <input 
+                            type="text" 
+                            className={styles.editableInput} 
+                            value={editedEmails[activeToneIndex]?.subject || ''}
+                            onChange={(e) => {
+                              const newEmails = [...editedEmails];
+                              if (newEmails[activeToneIndex]) {
+                                newEmails[activeToneIndex].subject = e.target.value;
+                                setEditedEmails(newEmails);
+                              }
+                            }}
+                          />
+                        </div>
+                        <button className={styles.copyBtn} onClick={() => handleCopy(editedEmails[activeToneIndex]?.subject || '', 'subject')}>
+                          {copiedId === 'subject' ? '✓ Copied' : '📋 Copy'}
+                        </button>
                       </div>
                     </div>
-                    <div className={styles.emailBody}>
-                      {results.body}
+                    <div className={styles.actionRow} style={{ marginBottom: '0.5rem', justifyContent: 'space-between' }}>
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>Tone: {editedEmails[activeToneIndex]?.tone}</div>
+                      <button className={styles.copyBtn} onClick={() => handleCopy(editedEmails[activeToneIndex]?.body || '', 'body')}>
+                        {copiedId === 'body' ? '✓ Copied' : '📋 Copy'}
+                      </button>
+                    </div>
+                    <div className={styles.emailBody} style={{ padding: 0 }}>
+                      <textarea 
+                        className={styles.editableTextarea}
+                        value={editedEmails[activeToneIndex]?.body || ''}
+                        onChange={(e) => {
+                          const newEmails = [...editedEmails];
+                          if (newEmails[activeToneIndex]) {
+                            newEmails[activeToneIndex].body = e.target.value;
+                            setEditedEmails(newEmails);
+                          }
+                        }}
+                      />
                     </div>
                     <div className={styles.feedbackInline}>
                       <button 
@@ -420,10 +562,26 @@ export default function AgentDashboard() {
                 <div className={styles.resultSection}>
                   <h3>🔄 Automated Follow-ups</h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                    {results.followUps.map((fu, idx) => (
+                    {editedFollowUps.map((fu, idx) => (
                       <div key={idx} className={styles.emailClientCard} style={{ padding: '1.5rem', opacity: 0.9 }}>
-                        <div style={{ color: '#718096', marginBottom: '1rem', fontSize: '0.85rem', fontWeight: 500, textTransform: 'uppercase' }}>Follow-up {idx + 1}</div>
-                        <div className={styles.emailBody}>{fu}</div>
+                        <div className={styles.actionRow} style={{ marginBottom: '1rem' }}>
+                          <div style={{ color: '#718096', fontSize: '0.85rem', fontWeight: 500, textTransform: 'uppercase' }}>Follow-up {idx + 1}</div>
+                          <button className={styles.copyBtn} onClick={() => handleCopy(fu, `fu_${idx}`)}>
+                            {copiedId === `fu_${idx}` ? '✓ Copied' : '📋 Copy'}
+                          </button>
+                        </div>
+                        <div className={styles.emailBody} style={{ padding: 0 }}>
+                          <textarea 
+                            className={styles.editableTextarea}
+                            style={{ minHeight: '100px' }}
+                            value={fu}
+                            onChange={(e) => {
+                              const newFollowUps = [...editedFollowUps];
+                              newFollowUps[idx] = e.target.value;
+                              setEditedFollowUps(newFollowUps);
+                            }}
+                          />
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -437,10 +595,16 @@ export default function AgentDashboard() {
                   Start New Outreach
                 </button>
                 <button 
+                  onClick={exportToCSV}
+                  className={styles.btnSecondaryAction} 
+                >
+                  Export to CSV
+                </button>
+                <button 
                   onClick={() => setIsFeedbackModalOpen(true)}
                   className={styles.betaFeedbackBtn} 
                 >
-                  Give Beta Feedback
+                  Give Feedback
                 </button>
               </div>
             )}
@@ -462,7 +626,7 @@ export default function AgentDashboard() {
               </div>
             ) : (
               <>
-                <h2>Beta Feedback</h2>
+                <h2>Share Your Feedback</h2>
                 
                 <div className={styles.feedbackGroup}>
                   <label>Was the email personalized enough?</label>
@@ -515,6 +679,8 @@ export default function AgentDashboard() {
             )}
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

@@ -12,6 +12,8 @@ export const metadata: Metadata = {
   description: "Automated sales outreach workflow powered by AI",
 };
 
+import Navbar from "./Navbar";
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -19,7 +21,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable}`}>
-      <body>{children}</body>
+      <body>
+        <Navbar />
+        {children}
+      </body>
     </html>
   );
 }
